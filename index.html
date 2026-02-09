@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TRELLIS API Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 32px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 16px;
+        }
+
+        .upload-area {
+            border: 3px dashed #667eea;
+            border-radius: 10px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 20px;
+        }
+
+        .upload-area:hover {
+            border-color: #764ba2;
+            background: #f8f9ff;
+        }
+
+        .upload-area.dragging {
+            border-color: #764ba2;
+            background: #f0f2ff;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .preview {
+            max-width: 100%;
+            max-height: 300px;
+            margin: 20px 0;
+            border-radius: 10px;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            width: 100%;
+            transition: transform 0.2s;
+        }
+
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            display: none;
+        }
+
+        .status.show {
+            display: block;
+        }
+
+        .status.processing {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .progress {
+            margin-top: 10px;
+            height: 6px;
+            background: #e0e0e0;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            width: 0%;
+            transition: width 0.3s;
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+
+        .download-btn {
+            margin-top: 15px;
+            background: #28a745;
+        }
+
+        .settings {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 10px;
+        }
+
+        .settings label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        .settings input {
+            width: 100%;
+            padding: 8px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        .api-url {
+            font-size: 12px;
+            color: #888;
+            margin-top: 20px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎨 TRELLIS API Demo</h1>
+        <p class="subtitle">Convert images to 3D models</p>
+
+        <div class="settings">
+            <label for="api-url">API URL:</label>
+            <input type="text" id="api-url" value="http://localhost:8000" placeholder="http://localhost:8000">
+        </div>
+
+        <div class="settings">
+            <label for="seed">Seed (for reproducibility):</label>
+            <input type="number" id="seed" value="1" min="1" max="1000">
+        </div>
+
+        <div class="upload-area" id="upload-area">
+            <input type="file" id="file-input" accept="image/*">
+            <div id="upload-content">
+                <p style="font-size: 48px; margin-bottom: 10px;">📸</p>
+                <p style="font-size: 18px; font-weight: 600; margin-bottom: 5px;">Click to upload or drag & drop</p>
+                <p style="font-size: 14px; color: #888;">Supports JPG, PNG, WebP</p>
+            </div>
+        </div>
+
+        <img id="preview" class="preview" style="display: none;">
+
+        <button id="convert-btn" disabled>Select an image first</button>
+
+        <div id="status" class="status">
+            <p id="status-message"></p>
+            <div class="progress" id="progress" style="display: none;">
+                <div class="progress-bar"></div>
+            </div>
+        </div>
+
+        <button id="download-btn" class="download-btn" style="display: none;">Download GLB File</button>
+
+        <p class="api-url">Make sure API is running at the specified URL</p>
+    </div>
+
+    <script>
+        const uploadArea = document.getElementById('upload-area');
+        const fileInput = document.getElementById('file-input');
+        const preview = document.getElementById('preview');
+        const convertBtn = document.getElementById('convert-btn');
+        const statusDiv = document.getElementById('status');
+        const statusMessage = document.getElementById('status-message');
+        const progress = document.getElementById('progress');
+        const downloadBtn = document.getElementById('download-btn');
+        const apiUrlInput = document.getElementById('api-url');
+        const seedInput = document.getElementById('seed');
+
+        let selectedFile = null;
+        let jobId = null;
+
+        // Upload area click
+        uploadArea.addEventListener('click', () => fileInput.click());
+
+        // Drag and drop
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragging');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragging');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragging');
+            const files = e.dataTransfer.files;
+            if (files.length > 0) {
+                handleFile(files[0]);
+            }
+        });
+
+        // File input change
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                handleFile(e.target.files[0]);
+            }
+        });
+
+        function handleFile(file) {
+            if (!file.type.startsWith('image/')) {
+                alert('Please select an image file');
+                return;
+            }
+
+            selectedFile = file;
+
+            // Show preview
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                preview.src = e.target.result;
+                preview.style.display = 'block';
+            };
+            reader.readAsDataURL(file);
+
+            // Enable button
+            convertBtn.disabled = false;
+            convertBtn.textContent = 'Convert to 3D';
+        }
+
+        // Convert button
+        convertBtn.addEventListener('click', async () => {
+            if (!selectedFile) return;
+
+            const apiUrl = apiUrlInput.value.trim();
+            const seed = parseInt(seedInput.value);
+
+            convertBtn.disabled = true;
+            downloadBtn.style.display = 'none';
+            showStatus('Processing...', 'processing');
+            progress.style.display = 'block';
+
+            try {
+                // Upload image
+                const formData = new FormData();
+                formData.append('file', selectedFile);
+
+                const uploadResponse = await fetch(`${apiUrl}/api/convert?seed=${seed}`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!uploadResponse.ok) {
+                    throw new Error(`Upload failed: ${uploadResponse.statusText}`);
+                }
+
+                const uploadData = await uploadResponse.json();
+                jobId = uploadData.job_id;
+
+                showStatus(`Job created: ${jobId}. Processing...`, 'processing');
+
+                // Poll for completion
+                await pollStatus(apiUrl, jobId);
+
+            } catch (error) {
+                console.error(error);
+                showStatus(`Error: ${error.message}`, 'error');
+                progress.style.display = 'none';
+                convertBtn.disabled = false;
+            }
+        });
+
+        async function pollStatus(apiUrl, jobId) {
+            while (true) {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+
+                try {
+                    const statusResponse = await fetch(`${apiUrl}/api/status/${jobId}`);
+                    if (!statusResponse.ok) {
+                        throw new Error(`Status check failed: ${statusResponse.statusText}`);
+                    }
+
+                    const statusData = await statusResponse.json();
+
+                    if (statusData.status === 'completed') {
+                        showStatus('✅ Conversion complete! Click below to download.', 'success');
+                        progress.style.display = 'none';
+                        downloadBtn.style.display = 'block';
+                        convertBtn.disabled = false;
+                        convertBtn.textContent = 'Convert Another Image';
+                        break;
+                    } else if (statusData.status === 'failed') {
+                        throw new Error(statusData.error || 'Conversion failed');
+                    } else {
+                        showStatus(`Status: ${statusData.status} - ${statusData.message || 'Processing...'}`, 'processing');
+                    }
+                } catch (error) {
+                    console.error(error);
+                    showStatus(`Error: ${error.message}`, 'error');
+                    progress.style.display = 'none';
+                    convertBtn.disabled = false;
+                    break;
+                }
+            }
+        }
+
+        // Download button
+        downloadBtn.addEventListener('click', async () => {
+            if (!jobId) return;
+
+            const apiUrl = apiUrlInput.value.trim();
+
+            try {
+                const response = await fetch(`${apiUrl}/api/download/${jobId}`);
+                if (!response.ok) {
+                    throw new Error(`Download failed: ${response.statusText}`);
+                }
+
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `model_${jobId}.glb`;
+                document.body.appendChild(a);
+                a.click();
+                window.URL.revokeObjectURL(url);
+                document.body.removeChild(a);
+
+                showStatus('✅ Downloaded! View at gltf-viewer.donmccurdy.com', 'success');
+            } catch (error) {
+                console.error(error);
+                showStatus(`Download error: ${error.message}`, 'error');
+            }
+        });
+
+        function showStatus(message, type) {
+            statusMessage.textContent = message;
+            statusDiv.className = `status show ${type}`;
+        }
+    </script>
+</body>
+</html>
