@@ -1,315 +1,122 @@
 """
-TRELLIS API Server
-FastAPI server for image to 3D conversion
+TRELLIS API Server v2
+FastAPI server for image processing and 3D generation with Celery queue
 """
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from pathlib import Path
-import uuid
-import shutil
-from typing import Optional
 import logging
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
+from api.config import settings
+from api.routers import rembg_router, trellis_router, jobs_router, health_router
+from api.middleware.rate_limit import limiter
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan events"""
+    # Startup
+    logger.info(f"Starting {settings.app_name} v{settings.app_version}")
+
+    # Ensure directories exist
+    settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    settings.output_dir.mkdir(parents=True, exist_ok=True)
+
+    yield
+
+    # Shutdown
+    logger.info("Shutting down...")
+
 
 # Create FastAPI app
 app = FastAPI(
-    title="TRELLIS API",
-    description="Convert images to 3D GLB files using TRELLIS",
-    version="1.0.0"
+    title=settings.app_name,
+    description="""
+## TRELLIS API
+
+Image processing and 3D generation API with background removal and image-to-3D conversion.
+
+### Features
+
+- **RemBG**: Remove backgrounds from images using AI
+- **TRELLIS**: Convert images to 3D GLB models
+- **Multi-view**: Support for multi-image 3D reconstruction
+- **Queue-based**: Async processing with job tracking
+
+### Authentication
+
+All endpoints require an API key via:
+- `Authorization: Bearer <your-api-key>` header
+- `X-API-Key: <your-api-key>` header
+
+### Workflow
+
+1. POST to `/api/v1/rembg` or `/api/v1/trellis` with images
+2. Receive a `job_id`
+3. Poll `GET /api/v1/jobs/{job_id}` for status
+4. Download results from `download_urls` when complete
+    """,
+    version=settings.app_version,
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
+
+# Add rate limiting
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
+    allow_origins=settings.cors_origins_list,
+    allow_credentials=settings.cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configuration
-UPLOAD_DIR = Path("./uploads")
-OUTPUT_DIR = Path("./outputs")
-UPLOAD_DIR.mkdir(exist_ok=True)
-OUTPUT_DIR.mkdir(exist_ok=True)
 
-# In-memory job storage (use Redis/DB for production)
-jobs = {}
-
-
-class ConversionRequest(BaseModel):
-    seed: Optional[int] = 1
-    texture_size: Optional[int] = 2048
-    optimize: Optional[bool] = True
-
-
-class JobStatus(BaseModel):
-    job_id: str
-    status: str  # 'pending', 'processing', 'completed', 'failed'
-    message: Optional[str] = None
-    download_url: Optional[str] = None
-    error: Optional[str] = None
-
-
-def cleanup_file(path: Path):
-    """Delete file after some time"""
-    try:
-        if path.exists():
-            path.unlink()
-            logger.info(f"Cleaned up: {path}")
-    except Exception as e:
-        logger.error(f"Cleanup failed for {path}: {e}")
-
-
-@app.get("/")
-async def root():
-    """Health check endpoint"""
-    return {
-        "service": "TRELLIS API",
-        "status": "running",
-        "version": "1.0.0",
-        "endpoints": {
-            "convert": "/api/convert",
-            "status": "/api/status/{job_id}",
-            "download": "/api/download/{job_id}"
-        }
-    }
-
-
-@app.get("/health")
-async def health():
-    """Health check"""
-    return {"status": "healthy"}
-
-
-@app.post("/api/convert", response_model=JobStatus)
-async def convert_image(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    seed: int = 1
-):
-    """
-    Convert an image to 3D GLB format
-
-    - **file**: Image file (JPG, PNG, WebP)
-    - **seed**: Random seed for reproducibility (default: 1)
-
-    Returns job ID for tracking progress
-    """
-    # Validate file type
-    if not file.content_type.startswith('image/'):
-        raise HTTPException(status_code=400, detail="File must be an image")
-
-    # Generate job ID
-    job_id = str(uuid.uuid4())
-
-    # Save uploaded file
-    input_path = UPLOAD_DIR / f"{job_id}{Path(file.filename).suffix}"
-    output_path = OUTPUT_DIR / f"{job_id}.glb"
-
-    try:
-        with input_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-
-        logger.info(f"Job {job_id}: Image uploaded - {file.filename}")
-
-        # Initialize job status
-        jobs[job_id] = {
-            "status": "pending",
-            "input_path": str(input_path),
-            "output_path": str(output_path),
-            "seed": seed
-        }
-
-        # Start processing in background
-        background_tasks.add_task(process_image, job_id, input_path, output_path, seed)
-
-        # Schedule cleanup (delete files after 1 hour)
-        background_tasks.add_task(cleanup_file, input_path)
-
-        return JobStatus(
-            job_id=job_id,
-            status="pending",
-            message="Image uploaded. Processing will begin shortly."
-        )
-
-    except Exception as e:
-        logger.error(f"Job {job_id}: Upload failed - {e}")
-        if input_path.exists():
-            input_path.unlink()
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
-
-
-@app.get("/api/status/{job_id}", response_model=JobStatus)
-async def get_status(job_id: str):
-    """
-    Check the status of a conversion job
-
-    - **job_id**: Job ID from /api/convert
-    """
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    job = jobs[job_id]
-
-    response = JobStatus(
-        job_id=job_id,
-        status=job["status"],
-        message=job.get("message")
-    )
-
-    if job["status"] == "completed":
-        response.download_url = f"/api/download/{job_id}"
-    elif job["status"] == "failed":
-        response.error = job.get("error")
-
-    return response
-
-
-@app.get("/api/download/{job_id}")
-async def download_result(job_id: str, background_tasks: BackgroundTasks):
-    """
-    Download the generated GLB file
-
-    - **job_id**: Job ID from /api/convert
-    """
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    job = jobs[job_id]
-
-    if job["status"] != "completed":
-        raise HTTPException(
-            status_code=400,
-            detail=f"Job is {job['status']}, not ready for download"
-        )
-
-    output_path = Path(job["output_path"])
-
-    if not output_path.exists():
-        raise HTTPException(status_code=404, detail="Output file not found")
-
-    # Schedule cleanup after download
-    background_tasks.add_task(cleanup_file, output_path)
-
-    return FileResponse(
-        path=output_path,
-        media_type="model/gltf-binary",
-        filename=f"model_{job_id}.glb"
+# Custom exception handlers
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Handle uncaught exceptions"""
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "InternalServerError",
+            "message": "An unexpected error occurred",
+            "detail": str(exc) if settings.debug else None,
+        },
     )
 
 
-@app.delete("/api/jobs/{job_id}")
-async def cancel_job(job_id: str):
-    """
-    Cancel a job and clean up files
-
-    - **job_id**: Job ID to cancel
-    """
-    if job_id not in jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-
-    job = jobs[job_id]
-
-    # Clean up files
-    for path_key in ["input_path", "output_path"]:
-        if path_key in job:
-            path = Path(job[path_key])
-            if path.exists():
-                path.unlink()
-
-    # Remove from jobs
-    del jobs[job_id]
-
-    return {"message": f"Job {job_id} cancelled and cleaned up"}
-
-
-# ============================================================================
-# PROCESSING FUNCTION - Choose implementation below
-# ============================================================================
-
-def process_image(job_id: str, input_path: Path, output_path: Path, seed: int):
-    """
-    Process image to 3D. Choose implementation:
-    - Option 1: Use Gradio client (proxy to HuggingFace)
-    - Option 2: Use local TRELLIS installation (requires GPU)
-    """
-    jobs[job_id]["status"] = "processing"
-    jobs[job_id]["message"] = "Converting image to 3D..."
-
-    try:
-        # OPTION 1: Proxy to HuggingFace (No GPU needed)
-        from gradio_client import Client, handle_file
-
-        logger.info(f"Job {job_id}: Connecting to HuggingFace Space...")
-        client = Client("JeffreyXiang/TRELLIS")
-
-        logger.info(f"Job {job_id}: Processing image...")
-        result = client.predict(
-            image=handle_file(str(input_path)),
-            seed=seed,
-            api_name="/image_to_3d"
-        )
-
-        # Get GLB path from result
-        if isinstance(result, dict) and 'glb' in result:
-            glb_path = result['glb']
-        elif isinstance(result, str):
-            glb_path = result
-        elif isinstance(result, tuple):
-            glb_path = result[0]
-        else:
-            raise ValueError(f"Unexpected result format: {type(result)}")
-
-        # Copy result to output path
-        shutil.copy(glb_path, output_path)
-
-        # OPTION 2: Local TRELLIS (Requires GPU and TRELLIS installed)
-        # Uncomment this block to use local TRELLIS:
-        """
-        import sys
-        sys.path.insert(0, str(Path.home() / ".cache/trellis/repo"))
-
-        from trellis.pipelines import TrellisImageTo3DPipeline
-        from PIL import Image
-        import torch
-
-        logger.info(f"Job {job_id}: Loading TRELLIS model...")
-        pipeline = TrellisImageTo3DPipeline.from_pretrained("JeffreyXiang/TRELLIS-image-large")
-        pipeline = pipeline.to("cuda" if torch.cuda.is_available() else "cpu")
-
-        logger.info(f"Job {job_id}: Processing image...")
-        image = Image.open(input_path).convert("RGB")
-        outputs = pipeline.run(image, seed=seed)
-
-        logger.info(f"Job {job_id}: Exporting GLB...")
-        # Export based on TRELLIS output structure
-        if hasattr(outputs, 'mesh'):
-            outputs.mesh.export(str(output_path))
-        else:
-            raise ValueError("Could not extract mesh from outputs")
-        """
-
-        # Mark as completed
-        jobs[job_id]["status"] = "completed"
-        jobs[job_id]["message"] = "Conversion completed successfully"
-        logger.info(f"Job {job_id}: Completed successfully")
-
-    except Exception as e:
-        logger.error(f"Job {job_id}: Failed - {e}")
-        jobs[job_id]["status"] = "failed"
-        jobs[job_id]["error"] = str(e)
-        jobs[job_id]["message"] = "Conversion failed"
+# Include routers
+app.include_router(health_router)
+app.include_router(rembg_router, prefix="/api/v1")
+app.include_router(trellis_router, prefix="/api/v1")
+app.include_router(jobs_router, prefix="/api/v1")
 
 
 if __name__ == "__main__":
     import uvicorn
     import os
+
     port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(
+        "api.main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=settings.debug,
+    )
