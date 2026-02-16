@@ -5,11 +5,11 @@ WORKDIR /app
 # Install system dependencies (including those needed for rembg/PIL)
 RUN apt-get update && apt-get install -y \
     git \
-    libgl1-mesa-glx \
+    libgl1 \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
-    libxrender-dev \
+    libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first (better Docker layer caching)
@@ -27,5 +27,5 @@ COPY . ./api/
 # Create directories
 RUN mkdir -p uploads outputs
 
-# Default command - run Celery worker (override in docker-compose)
-CMD ["celery", "-A", "api.tasks.celery_app", "worker", "--loglevel=info"]
+# Default command - run Celery worker
+CMD ["celery", "-A", "api.tasks.celery_app", "worker", "--loglevel=info", "-Q", "rembg,trellis,cleanup", "--concurrency=2"]
