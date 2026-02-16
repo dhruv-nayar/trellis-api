@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -15,9 +15,10 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements first (better Docker layer caching)
 COPY requirements.txt .
 
-# Install Python dependencies
-# Cache bust: v2
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies and explicitly onnxruntime
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir onnxruntime && \
+    python -c "import onnxruntime; print('onnxruntime OK')"
 
 # Copy application code
 COPY . ./api/
