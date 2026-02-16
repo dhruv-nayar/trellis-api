@@ -28,6 +28,13 @@ class JobResponse(BaseModel):
         }
 
 
+class ImagePreview(BaseModel):
+    """Base64 encoded image preview"""
+    filename: str = Field(..., description="Original filename")
+    data: str = Field(..., description="Base64 encoded image data")
+    media_type: str = Field(..., description="MIME type (e.g., image/png)")
+
+
 class JobStatusResponse(BaseModel):
     """Detailed job status response"""
     job_id: str = Field(..., description="Unique identifier for the job")
@@ -47,6 +54,10 @@ class JobStatusResponse(BaseModel):
     download_urls: Optional[List[str]] = Field(
         None,
         description="URLs to download results when completed"
+    )
+    previews: Optional[List[ImagePreview]] = Field(
+        None,
+        description="Base64 encoded image previews (thumbnails) when completed"
     )
     input_count: Optional[int] = Field(None, description="Number of input files")
     output_count: Optional[int] = Field(None, description="Number of output files")
