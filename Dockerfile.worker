@@ -15,8 +15,9 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements first (better Docker layer caching)
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies (onnxruntime explicitly for rembg)
+RUN pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir onnxruntime
 
 # Pre-download rembg model to avoid downloading on first request
 RUN python -c "from rembg import new_session; new_session('u2net')" || true
