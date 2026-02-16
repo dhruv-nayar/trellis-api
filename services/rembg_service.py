@@ -7,9 +7,23 @@ import logging
 from pathlib import Path
 from typing import List, Optional
 from PIL import Image
-from rembg import remove, new_session
+
+# Lazy imports for rembg to avoid slow startup
+_rembg_remove = None
+_rembg_new_session = None
 
 logger = logging.getLogger(__name__)
+
+
+def _get_rembg():
+    """Lazy load rembg to avoid slow import at startup"""
+    global _rembg_remove, _rembg_new_session
+    if _rembg_remove is None:
+        logger.info("Loading rembg module...")
+        from rembg import remove, new_session
+        _rembg_remove = remove
+        _rembg_new_session = new_session
+    return _rembg_remove, _rembg_new_session
 
 
 class RemBGService:
@@ -38,6 +52,7 @@ class RemBGService:
         """Lazy-load the rembg session"""
         if self._session is None:
             logger.info(f"Loading rembg model: {self.model_name}")
+            _, new_session = _get_rembg()
             self._session = new_session(self.model_name)
         return self._session
 
@@ -71,6 +86,7 @@ class RemBGService:
                 img = img.convert("RGB")
 
             # Remove background
+            remove, _ = _get_rembg()
             output = remove(
                 img,
                 session=self.session,

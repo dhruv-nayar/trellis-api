@@ -43,16 +43,80 @@ image = (
 @app.function(
     image=image,
     timeout=600,  # 10 minutes for long TRELLIS operations
-    allow_concurrent_inputs=10,
 )
 @modal.asgi_app()
 def fastapi_app():
     """Serve the FastAPI application."""
-    import sys
-    sys.path.insert(0, "/root")
+    # Create a minimal FastAPI app directly here to avoid import delays
+    from fastapi import FastAPI, UploadFile, File, HTTPException
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import Response
+    import tempfile
+    from pathlib import Path
 
-    from api.main_sync import app
-    return app
+    fastapi = FastAPI(
+        title="TRELLIS API (Modal)",
+        version="2.0.0-modal",
+    )
+
+    fastapi.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @fastapi.get("/")
+    def root():
+        return {
+            "name": "TRELLIS API (Modal)",
+            "version": "2.0.0-modal",
+            "endpoints": {
+                "health": "/health",
+                "rembg": "/api/v1/rembg/",
+            }
+        }
+
+    @fastapi.get("/health")
+    def health():
+        return {"status": "healthy", "version": "2.0.0-modal"}
+
+    @fastapi.post("/api/v1/rembg/")
+    async def remove_background(files: list[UploadFile] = File(...)):
+        """Remove background from images"""
+        if not files:
+            raise HTTPException(status_code=400, detail="No files provided")
+
+        # Lazy import rembg only when needed
+        from rembg import remove, new_session
+        from PIL import Image
+        import io
+
+        # Process first file
+        file = files[0]
+        content = await file.read()
+
+        # Process image
+        img = Image.open(io.BytesIO(content))
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGB")
+
+        session = new_session("u2net")
+        output = remove(img, session=session)
+
+        # Convert to bytes
+        output_buffer = io.BytesIO()
+        output.save(output_buffer, format="PNG")
+        output_buffer.seek(0)
+
+        return Response(
+            content=output_buffer.getvalue(),
+            media_type="image/png",
+            headers={"Content-Disposition": f'attachment; filename="{Path(file.filename).stem}_nobg.png"'}
+        )
+
+    return fastapi
 
 
 # For local testing with `modal serve`
